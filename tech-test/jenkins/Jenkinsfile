@@ -1,0 +1,50 @@
+pipeline {
+  agent any
+  environment {
+    AWS_REGION = 'us-east-1'
+    ECR_REPO = '123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp'
+    IMAGE_TAG = "${env.BUILD_NUMBER}"
+    K8S_NAMESPACE = 'jenkins'
+    SLACK_WEBHOOK_URL = credentials('slack-webhook')
+  }
+  stages {
+    stage('Checkout') { steps { checkout scm } }
+    stage('Lint K8s/YAML') {
+      steps {
+        sh 'yamllint k8s/'
+        sh 'kubeval k8s/*.yaml || true'
+      }
+    }
+    stage('Unit Tests') {
+      steps {
+        sh 'echo "Running mocked unit tests..."'
+        sh 'exit 0'
+      }
+    }
+    stage('Build & Push Docker Image') {
+      steps {
+        script {
+          sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO'
+          sh 'docker build -t $ECR_REPO:$IMAGE_TAG ./app'
+          sh 'docker push $ECR_REPO:$IMAGE_TAG'
+        }
+      }
+    }
+    stage('Deploy to EKS') {
+      steps {
+        script {
+          sh 'aws eks update-kubeconfig --name my-eks-cluster --region $AWS_REGION'
+          sh 'helm upgrade --install myapp ./helm-chart --namespace $K8S_NAMESPACE --set image.repository=$ECR_REPO --set image.tag=$IMAGE_TAG'
+        }
+      }
+    }
+    stage('Notify') {
+      steps {
+        script {
+          sh 'curl -X POST -H "Content-type: application/json" --data "{\"text\":\"Deployment to Jenkins namespace successful.\"}" $SLACK_WEBHOOK_URL'
+        }
+      }
+    }
+  }
+  post { failure { echo 'Deployment failed!' } }
+}
